@@ -1,0 +1,47 @@
+# k8s/executor-pod-template.yaml
+#
+# EMR on EKS executor pod template.
+# Referenced via spark.kubernetes.executor.podTemplateFile in the EMR job config.
+#
+# Key requirements for KYC enclave access:
+#   1. nodeSelector: executors must land on Nitro-capable nodes (same node as the enclave DaemonSet)
+#   Note: serviceAccountName must NOT be set — EMR on EKS manages it via the execution role ARN.
+#
+# Executors connect to the enclave via VSOCK CID=16:5000.
+# No special resource limits or privileged mode needed — AF_VSOCK sockets
+# are available to unprivileged processes.
+#
+# Reference:
+#   https://docs.aws.amazon.com/emr/latest/EMR-on-EKS-DevelopmentGuide/pod-templates.html
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: nitro-kyc-executor
+spec:
+  # ── Scheduling ──────────────────────────────────────────────────────────────
+  # Executors must land on the same nodes as the enclave DaemonSet
+  # so they can reach it via VSOCK (host-local only).
+  nodeSelector:
+    aws-nitro-enclaves-k8s-dp: enabled
+
+  tolerations:
+    - key: aws.ec2.nitro/nitro_enclaves
+      operator: Exists
+      effect: NoSchedule
+
+  containers:
+    - name: spark-kubernetes-executor
+      # EMR will inject the actual executor image — do not set image here
+      env:
+        - name: AWS_REGION
+          value: "us-west-2"
+        - name: S3_BUCKET
+          value: "eks-ne-testing-abhi"      # ← replace with your bucket
+        - name: S3_INPUT_KEY
+          value: "kyc/customers.parquet"
+        - name: S3_DEK_KEY
+          value: "kyc/dek.enc"
+        - name: S3_OUTPUT_KEY
+          value: "kyc/results"

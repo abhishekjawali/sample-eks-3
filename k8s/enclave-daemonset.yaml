@@ -1,0 +1,100 @@
+# k8s/enclave-daemonset.yaml
+#
+# Long-running KYC enclave service — one pod per Nitro-capable node.
+#
+# Each pod:
+#   - Runs vsock-proxy (forwards KMS HTTPS traffic from the enclave)
+#   - Launches the Nitro Enclave with fixed CID=16
+#   - Monitors and restarts the enclave if it exits
+#
+# Spark executor pods on the same node connect to:
+#   VSOCK CID=16, port=5000
+# No coordination with this DaemonSet is needed — executors just connect.
+#
+# Deploy AFTER:
+#   1. nitro-allocator-setup.yaml (hugepage allocator) from nitro-kms-demo/k8s/
+#   2. serviceaccount.yaml
+#
+# Update image: replace <ACCOUNT_ID> with your AWS account ID.
+#
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nitro-kyc-enclave
+  namespace: default
+  labels:
+    app: nitro-kyc-enclave
+spec:
+  selector:
+    matchLabels:
+      app: nitro-kyc-enclave
+  template:
+    metadata:
+      labels:
+        app: nitro-kyc-enclave
+    spec:
+      # ── Scheduling ──────────────────────────────────────────────────────────
+      nodeSelector:
+        aws-nitro-enclaves-k8s-dp: enabled
+
+      tolerations:
+        - key: aws.ec2.nitro/nitro_enclaves
+          operator: Exists
+          effect: NoSchedule
+
+      # IRSA service account — grants S3 and KMS permissions to the pod
+      serviceAccountName: nitro-kyc-sa
+
+      containers:
+        - name: sidecar
+          # Replace <ACCOUNT_ID> with your AWS account ID after running build_sidecar.sh
+          image: 885629272022.dkr.ecr.us-west-2.amazonaws.com/nitro-kyc-sidecar:latest
+          imagePullPolicy: Always
+
+          env:
+            - name: AWS_REGION
+              value: "us-west-2"
+
+            - name: EIF_PATH
+              value: "/app/enclave.eif"
+
+            - name: ENCLAVE_CPU_COUNT
+              value: "2"
+
+            - name: ENCLAVE_MEMORY_MB
+              value: "2048"
+
+            # Set to "true" for initial testing (PCR0 = all-zeros, no attestation).
+            # Set to "false" for production (real PCR0, KMS enforces attestation).
+            - name: ENCLAVE_DEBUG
+              value: "false"
+
+          # ── Resource requests ──────────────────────────────────────────────
+          resources:
+            limits:
+              # Grants /dev/nitro_enclaves access and reserves one enclave slot
+              aws.ec2.nitro/nitro_enclaves: "1"
+              cpu: "4"
+              memory: "2Gi"
+              # AL2023 allocator uses 1GB hugepages — must match allocator config
+              hugepages-1Gi: "2Gi"
+            requests:
+              cpu: "1"
+              memory: "512Mi"
+              hugepages-1Gi: "2Gi"
+
+          # ── Security context ───────────────────────────────────────────────
+          # nitro-cli requires privileged access to /dev/nitro_enclaves
+          securityContext:
+            privileged: true
+
+          # ── Volume mounts ──────────────────────────────────────────────────
+          volumeMounts:
+            - name: nitro-enclaves-dev
+              mountPath: /dev/nitro_enclaves
+
+      volumes:
+        - name: nitro-enclaves-dev
+          hostPath:
+            path: /dev/nitro_enclaves
+            type: CharDevice
