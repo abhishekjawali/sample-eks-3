@@ -59,6 +59,7 @@ S3 (encrypted customer applications)
 
 ```
 nitro-kyc-demo/
+├── env.sh                     # Central config — edit this before running any script
 ├── data-gen/
 │   ├── generate_data.py       # Generates 1000 synthetic encrypted customer records
 │   └── requirements.txt
@@ -76,6 +77,7 @@ nitro-kyc-demo/
 │   ├── build_eif.sh           # Run on Nitro EC2: builds EIF, prints PCR values, uploads to S3
 │   └── build_sidecar.sh       # Builds sidecar Docker image, pushes to ECR
 ├── infra/
+│   ├── eks.sh                 # Creates EKS cluster + Nitro nodegroup (run once)
 │   ├── setup.sh               # Creates AWS resources (run once)
 │   └── update_kms_policy.sh   # Locks KMS key to enclave PCR0 (run after EIF build)
 └── k8s/
@@ -83,6 +85,34 @@ nitro-kyc-demo/
     ├── serviceaccount.yaml     # IRSA service account
     └── executor-pod-template.yaml # EMR executor pod template: nodeSelector + IRSA SA
 ```
+
+---
+
+## Configuration
+
+All environment variables are centralised in [env.sh](env.sh). Every script sources it automatically — you do not need to pass variables on the command line unless overriding a default.
+
+```bash
+# Review defaults before running anything
+cat env.sh
+
+# Override specific values by exporting before running a script
+export S3_BUCKET=my-other-bucket
+export CLUSTER_NAME=my-cluster
+bash infra/setup.sh
+```
+
+Key defaults (edit `env.sh` to change):
+
+| Variable | Default | Used by |
+|---|---|---|
+| `AWS_REGION` | `us-west-2` | all scripts |
+| `CLUSTER_NAME` | `eks-emr-ne` | eks.sh, setup.sh |
+| `S3_BUCKET` | `eks-ne-testing-abhi` | setup.sh, data-gen, build scripts |
+| `KMS_KEY_ALIAS` | `alias/nitro-kyc-demo` | setup.sh, update_kms_policy.sh |
+| `IAM_ROLE_NAME` | `nitro-kyc-pod-role` | setup.sh, update_kms_policy.sh |
+| `ECR_REPO_NAME` | `nitro-kyc-sidecar` | setup.sh |
+| `NITRO_INSTANCE_TYPE` | `m5.2xlarge` | eks.sh |
 
 ---
 
@@ -101,8 +131,8 @@ nitro-kyc-demo/
 ## Prerequisites
 
 ### EKS Cluster
-- Same as nitro-kms-demo: `eksworkshop-eksctl`, `us-west-2`
-- Nitro-capable node group (`m5.xlarge` or larger)
+- Cluster: `eks-emr-ne`, region: `us-west-2` (defaults in `env.sh`)
+- Nitro-capable node group (`m5.2xlarge` or larger)
 - AWS Nitro Enclaves device plugin installed
 - Nodes labelled `aws-nitro-enclaves-k8s-dp=enabled`
 
@@ -138,7 +168,7 @@ bash eks.sh
 
 Creates:
 - **2 general nodes** (`m5.large`) — for the Spark driver and general workloads
-- **1 Nitro Enclave node** (`m5.xlarge`) — for the enclave DaemonSet and Spark executors
+- **1 Nitro Enclave node** (`m5.2xlarge`) — for the enclave DaemonSet and Spark executors
 
 The Nitro node is provisioned with an EC2 launch template that sets `EnclaveOptions.Enabled=true`. The AWS Nitro Enclaves device plugin is installed automatically and labels the node `aws-nitro-enclaves-k8s-dp=enabled`.
 
@@ -178,9 +208,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r data-gen/requirements.txt
 
-KMS_KEY_ID=<KMS_KEY_ID> \
-S3_BUCKET=eks-ne-testing-abhi \
-python3 data-gen/generate_data.py
+source env.sh
+KMS_KEY_ID=<KMS_KEY_ID from Step 1> python3 data-gen/generate_data.py
 
 deactivate
 ```
@@ -198,7 +227,8 @@ scp -i <PATH_TO_KEY.pem> -r nitro-kyc-demo ec2-user@<NITRO_EC2_IP>:~/
 # SSH in and build
 ssh -i <PATH_TO_KEY.pem> ec2-user@<NITRO_EC2_IP>
 cd nitro-kyc-demo
-S3_EIF_BUCKET=eks-ne-testing-abhi bash build/build_eif.sh
+source env.sh
+bash build/build_eif.sh
 ```
 
 `build_eif.sh` will:
@@ -228,11 +258,10 @@ Updates the KMS key policy so `kms:Decrypt` is only allowed from a Nitro Enclave
 ### Step 5 — Build the Sidecar Image
 
 ```bash
-cd nitro-kyc-demo/build
+cd nitro-kyc-demo
 
-ECR_URI=<ECR_URI from Step 1> \
-S3_EIF_BUCKET=eks-ne-testing-abhi \
-bash build_sidecar.sh
+source env.sh
+ECR_URI=<ECR_URI from Step 1> bash build/build_sidecar.sh
 ```
 
 Downloads the EIF from S3, bakes it into the sidecar image alongside `nitro-cli` and `vsock-proxy`, pushes to ECR.
@@ -277,9 +306,10 @@ kubectl logs -l app=nitro-kyc-enclave
 #### 8a — Grant EMR access to the EKS namespace
 
 ```bash
+source env.sh
 eksctl create iamidentitymapping \
-  --cluster eksworkshop-eksctl \
-  --region us-west-2 \
+  --cluster "${CLUSTER_NAME}" \
+  --region "${AWS_REGION}" \
   --namespace default \
   --service-name "emr-containers"
 ```
@@ -291,10 +321,11 @@ This creates the Kubernetes RBAC roles (`emr-containers-role`, `emr-containers-r
 The `nitro-kyc-pod-role` is used as the EMR job execution role. Add `emr-containers.amazonaws.com` as a trusted principal so EMR can assume it when starting the job:
 
 ```bash
+source env.sh
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 OIDC_ISSUER=$(aws eks describe-cluster \
-  --name eksworkshop-eksctl \
-  --region us-west-2 \
+  --name "${CLUSTER_NAME}" \
+  --region "${AWS_REGION}" \
   --query 'cluster.identity.oidc.issuer' \
   --output text | sed 's|https://||')
 
@@ -330,18 +361,19 @@ aws iam update-assume-role-policy \
 #### 8c — Create the virtual cluster
 
 ```bash
+source env.sh
 VIRTUAL_CLUSTER_ID=$(aws emr-containers create-virtual-cluster \
   --name nitro-kyc-emr \
-  --container-provider '{
-    "id": "eksworkshop-eksctl",
-    "type": "EKS",
-    "info": {
-      "eksInfo": {
-        "namespace": "default"
+  --container-provider "{
+    \"id\": \"${CLUSTER_NAME}\",
+    \"type\": \"EKS\",
+    \"info\": {
+      \"eksInfo\": {
+        \"namespace\": \"default\"
       }
     }
-  }' \
-  --region us-west-2 \
+  }" \
+  --region "${AWS_REGION}" \
   --query 'id' \
   --output text)
 
@@ -355,22 +387,25 @@ Save the `VIRTUAL_CLUSTER_ID` — needed for Step 9.
 ### Step 9 — Upload Spark Script and Submit EMR Job
 
 ```bash
+source env.sh
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
 # Upload Spark job and executor template to S3
-aws s3 cp spark/kyc_screening.py s3://eks-ne-testing-abhi/scripts/kyc_screening.py
-aws s3 cp k8s/executor-pod-template.yaml s3://eks-ne-testing-abhi/templates/executor-pod-template.yaml
+aws s3 cp spark/kyc_screening.py "s3://${S3_BUCKET}/scripts/kyc_screening.py"
+aws s3 cp k8s/executor-pod-template.yaml "s3://${S3_BUCKET}/templates/executor-pod-template.yaml"
 
 # Submit EMR on EKS job
 aws emr-containers start-job-run \
   --virtual-cluster-id <VIRTUAL_CLUSTER_ID> \
   --name kyc-screening \
-  --execution-role-arn arn:aws:iam::<ACCOUNT_ID>:role/nitro-kyc-pod-role \
+  --execution-role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${IAM_ROLE_NAME}" \
   --release-label emr-6.10.0-latest \
-  --job-driver '{
-    "sparkSubmitJobDriver": {
-      "entryPoint": "s3://eks-ne-testing-abhi/scripts/kyc_screening.py",
-      "sparkSubmitParameters": "--conf spark.executor.instances=2 --conf spark.executor.cores=1 --conf spark.kubernetes.executor.podTemplateFile=s3://eks-ne-testing-abhi/templates/executor-pod-template.yaml --conf spark.kubernetes.driverEnv.S3_BUCKET=eks-ne-testing-abhi --conf spark.kubernetes.driverEnv.S3_INPUT_KEY=kyc/customers.parquet --conf spark.kubernetes.driverEnv.S3_DEK_KEY=kyc/dek.enc --conf spark.kubernetes.driverEnv.S3_OUTPUT_KEY=kyc/results --conf spark.kubernetes.driverEnv.AWS_REGION=us-west-2"
+  --job-driver "{
+    \"sparkSubmitJobDriver\": {
+      \"entryPoint\": \"s3://${S3_BUCKET}/scripts/kyc_screening.py\",
+      \"sparkSubmitParameters\": \"--conf spark.executor.instances=2 --conf spark.executor.cores=1 --conf spark.kubernetes.executor.podTemplateFile=s3://${S3_BUCKET}/templates/executor-pod-template.yaml --conf spark.kubernetes.driverEnv.S3_BUCKET=${S3_BUCKET} --conf spark.kubernetes.driverEnv.S3_INPUT_KEY=kyc/customers.parquet --conf spark.kubernetes.driverEnv.S3_DEK_KEY=kyc/dek.enc --conf spark.kubernetes.driverEnv.S3_OUTPUT_KEY=kyc/results --conf spark.kubernetes.driverEnv.AWS_REGION=${AWS_REGION}\"
     }
-  }' \
+  }" \
   --configuration-overrides '{
     "monitoringConfiguration": {
       "cloudWatchMonitoringConfiguration": {
@@ -379,7 +414,7 @@ aws emr-containers start-job-run \
       }
     }
   }' \
-  --region us-west-2
+  --region "${AWS_REGION}"
 ```
 
 ---
@@ -387,15 +422,17 @@ aws emr-containers start-job-run \
 ## Verifying the Output
 
 ```bash
+source env.sh
+
 # EMR job status
 aws emr-containers describe-job-run \
   --virtual-cluster-id <VIRTUAL_CLUSTER_ID> \
   --id <JOB_RUN_ID> \
-  --region us-west-2 \
+  --region "${AWS_REGION}" \
   --query 'jobRun.state'
 
 # Results in S3
-aws s3 ls s3://eks-ne-testing-abhi/kyc/results/
+aws s3 ls "s3://${S3_BUCKET}/kyc/results/"
 
 # DaemonSet pod logs — shows batch processing, no PII
 kubectl logs -l app=nitro-kyc-enclave --tail=50
@@ -449,30 +486,33 @@ REJECT  : 150  (15.0%)
 ## Cleanup
 
 ```bash
+source env.sh
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
 # EMR virtual cluster
 aws emr-containers delete-virtual-cluster \
   --id <VIRTUAL_CLUSTER_ID> \
-  --region us-west-2
+  --region "${AWS_REGION}"
 
 kubectl delete daemonset nitro-kyc-enclave
-kubectl delete serviceaccount nitro-kyc-sa
+kubectl delete serviceaccount "${K8S_SERVICE_ACCOUNT}"
 
-aws ecr delete-repository --repository-name nitro-kyc-sidecar --force --region us-west-2
+aws ecr delete-repository --repository-name "${ECR_REPO_NAME}" --force --region "${AWS_REGION}"
 
 aws iam detach-role-policy \
-  --role-name nitro-kyc-pod-role \
-  --policy-arn arn:aws:iam::<ACCOUNT_ID>:policy/nitro-kyc-pod-policy
+  --role-name "${IAM_ROLE_NAME}" \
+  --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${IAM_POLICY_NAME}"
 
-aws iam delete-role --role-name nitro-kyc-pod-role
-aws iam delete-policy --policy-arn arn:aws:iam::<ACCOUNT_ID>:policy/nitro-kyc-pod-policy
+aws iam delete-role --role-name "${IAM_ROLE_NAME}"
+aws iam delete-policy --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${IAM_POLICY_NAME}"
 
-aws s3 rm s3://eks-ne-testing-abhi/kyc/ --recursive
-aws s3 rm s3://eks-ne-testing-abhi/eif/ --recursive
-aws s3 rm s3://eks-ne-testing-abhi/scripts/kyc_screening.py
-aws s3 rm s3://eks-ne-testing-abhi/templates/executor-pod-template.yaml
+aws s3 rm "s3://${S3_BUCKET}/kyc/" --recursive
+aws s3 rm "s3://${S3_BUCKET}/eif/" --recursive
+aws s3 rm "s3://${S3_BUCKET}/scripts/kyc_screening.py"
+aws s3 rm "s3://${S3_BUCKET}/templates/executor-pod-template.yaml"
 
 aws kms schedule-key-deletion \
-  --key-id alias/nitro-kyc-demo \
+  --key-id "${KMS_KEY_ALIAS}" \
   --pending-window-in-days 7 \
-  --region us-west-2
+  --region "${AWS_REGION}"
 ```

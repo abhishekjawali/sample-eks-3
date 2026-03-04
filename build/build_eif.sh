@@ -19,11 +19,11 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../env.sh"
+
 S3_EIF_BUCKET="${S3_EIF_BUCKET:-}"
-S3_EIF_KEY="${S3_EIF_KEY:-eif/enclave.eif}"
-AWS_REGION="${AWS_REGION:-us-west-2}"
-DOCKER_IMAGE_NAME="nitro-kyc-enclave"
-DOCKER_IMAGE_TAG="latest"
+DOCKER_IMAGE_TAG="${IMAGE_TAG}"
 EIF_OUTPUT="enclave.eif"
 
 if [ -z "$S3_EIF_BUCKET" ]; then
@@ -82,7 +82,6 @@ fi
 # The enclave Dockerfile uses FROM aws-nitro-enclaves-sdk-c to copy kmstool.
 # Official build: docker build -f containers/Dockerfile.al2 --target builder
 # Reference: https://github.com/aws/aws-nitro-enclaves-sdk-c
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENCLAVE_DIR="${SCRIPT_DIR}/../enclave"
 SDK_IMAGE="aws-nitro-enclaves-sdk-c"
 

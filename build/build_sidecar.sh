@@ -11,14 +11,13 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../env.sh"
+
 ECR_URI="${ECR_URI:-}"
 S3_EIF_BUCKET="${S3_EIF_BUCKET:-}"
-S3_EIF_KEY="${S3_EIF_KEY:-eif/enclave.eif}"
-AWS_REGION="${AWS_REGION:-us-west-2}"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
 EIF_LOCAL_PATH="enclave.eif"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SIDECAR_DIR="${SCRIPT_DIR}/../sidecar"
 
 if [ -z "$ECR_URI" ] || [ -z "$S3_EIF_BUCKET" ]; then

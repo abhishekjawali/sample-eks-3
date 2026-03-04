@@ -17,9 +17,8 @@ if [ -z "$PCR0" ]; then
   exit 1
 fi
 
-AWS_REGION="us-west-2"
-KMS_KEY_ALIAS="alias/nitro-kyc-demo"
-IAM_ROLE_NAME="nitro-kyc-pod-role"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../env.sh"
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 KMS_KEY_ID=$(aws kms describe-key \

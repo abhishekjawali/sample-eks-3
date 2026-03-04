@@ -11,15 +11,8 @@ for cmd in aws eksctl; do
 done
 
 # ─── Configuration ────────────────────────────────────────────────────────────
-AWS_REGION="us-west-2"
-CLUSTER_NAME="eksworkshop-eksctl"
-ECR_REPO_NAME="nitro-kyc-sidecar"
-IAM_ROLE_NAME="nitro-kyc-pod-role"
-IAM_POLICY_NAME="nitro-kyc-pod-policy"
-K8S_NAMESPACE="default"
-K8S_SERVICE_ACCOUNT="nitro-kyc-sa"
-KMS_KEY_ALIAS="alias/nitro-kyc-demo"
-S3_BUCKET="${S3_BUCKET:-eks-ne-testing-abhi}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../env.sh"
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)

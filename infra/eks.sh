@@ -26,13 +26,8 @@
 set -euo pipefail
 
 # ─── Configuration ────────────────────────────────────────────────────────────
-CLUSTER_NAME="${CLUSTER_NAME:-eks-emr-ne}"
-AWS_REGION="${AWS_REGION:-us-west-2}"
-K8S_VERSION="${K8S_VERSION:-1.35}"
-GENERAL_INSTANCE_TYPE="${GENERAL_INSTANCE_TYPE:-m5.large}"
-NITRO_INSTANCE_TYPE="${NITRO_INSTANCE_TYPE:-m5.2xlarge}"
-GENERAL_NODE_COUNT=2
-NITRO_NODE_COUNT=1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../env.sh"
 LT_NAME="${CLUSTER_NAME}-nitro-enclaves"
 
 # ─── Prerequisites ────────────────────────────────────────────────────────────
