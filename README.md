@@ -127,6 +127,32 @@ nitro-kyc-demo/
 
 ---
 
+### Step 0 — Create EKS Cluster *(first-time only)*
+
+Skip this step if the cluster already exists.
+
+```bash
+cd nitro-kyc-demo/infra
+bash eks.sh
+```
+
+Creates:
+- **2 general nodes** (`m5.large`) — for the Spark driver and general workloads
+- **1 Nitro Enclave node** (`m5.xlarge`) — for the enclave DaemonSet and Spark executors
+
+The Nitro node is provisioned with an EC2 launch template that sets `EnclaveOptions.Enabled=true`. The AWS Nitro Enclaves device plugin is installed automatically and labels the node `aws-nitro-enclaves-k8s-dp=enabled`.
+
+Optional overrides:
+```bash
+CLUSTER_NAME=my-cluster \
+NITRO_INSTANCE_TYPE=m5.2xlarge \
+bash eks.sh
+```
+
+> **Note:** If you are not using `eks.sh` to create the cluster, apply the hugepage allocator manually before Step 7: `kubectl apply -f k8s/kyc-allocator-setup.yaml`
+
+---
+
 ### Step 1 — Create AWS Resources
 
 ```bash
@@ -226,9 +252,9 @@ Edit [k8s/executor-pod-template.yaml](k8s/executor-pod-template.yaml) and replac
 ### Step 7 — Deploy the Enclave DaemonSet
 
 ```bash
-# 1. Hugepage allocator (reuse from nitro-kms-demo — run once per cluster)
-kubectl apply -f ../nitro-kms-demo/k8s/nitro-allocator-setup.yaml
-kubectl -n kube-system rollout status daemonset/nitro-enclaves-allocator-setup
+# 1. Hugepage allocator (run once per cluster — skip if eks.sh already ran this)
+kubectl apply -f k8s/kyc-allocator-setup.yaml
+kubectl -n kube-system rollout status daemonset/kyc-nitro-enclaves-allocator
 
 # 2. Service account (IRSA)
 kubectl apply -f k8s/serviceaccount.yaml
@@ -342,7 +368,7 @@ aws emr-containers start-job-run \
   --job-driver '{
     "sparkSubmitJobDriver": {
       "entryPoint": "s3://eks-ne-testing-abhi/scripts/kyc_screening.py",
-      "sparkSubmitParameters": "--conf spark.executor.instances=2 --conf spark.executor.cores=2 --conf spark.kubernetes.executor.podTemplateFile=s3://eks-ne-testing-abhi/templates/executor-pod-template.yaml --conf spark.kubernetes.driverEnv.S3_BUCKET=eks-ne-testing-abhi --conf spark.kubernetes.driverEnv.S3_INPUT_KEY=kyc/customers.parquet --conf spark.kubernetes.driverEnv.S3_DEK_KEY=kyc/dek.enc --conf spark.kubernetes.driverEnv.S3_OUTPUT_KEY=kyc/results --conf spark.kubernetes.driverEnv.AWS_REGION=us-west-2"
+      "sparkSubmitParameters": "--conf spark.executor.instances=2 --conf spark.executor.cores=1 --conf spark.kubernetes.executor.podTemplateFile=s3://eks-ne-testing-abhi/templates/executor-pod-template.yaml --conf spark.kubernetes.driverEnv.S3_BUCKET=eks-ne-testing-abhi --conf spark.kubernetes.driverEnv.S3_INPUT_KEY=kyc/customers.parquet --conf spark.kubernetes.driverEnv.S3_DEK_KEY=kyc/dek.enc --conf spark.kubernetes.driverEnv.S3_OUTPUT_KEY=kyc/results --conf spark.kubernetes.driverEnv.AWS_REGION=us-west-2"
     }
   }' \
   --configuration-overrides '{

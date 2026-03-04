@@ -171,11 +171,20 @@ POLICY_JSON=$(cat <<EOF
 EOF
 )
 
-POLICY_ARN=$(aws iam create-policy \
-  --policy-name "$IAM_POLICY_NAME" \
-  --policy-document "$POLICY_JSON" \
-  --query 'Policy.Arn' \
-  --output text)
+POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${IAM_POLICY_NAME}"
+if aws iam get-policy --policy-arn "$POLICY_ARN" &>/dev/null; then
+  echo "    Policy already exists — updating to latest version..."
+  aws iam create-policy-version \
+    --policy-arn "$POLICY_ARN" \
+    --policy-document "$POLICY_JSON" \
+    --set-as-default
+else
+  aws iam create-policy \
+    --policy-name "$IAM_POLICY_NAME" \
+    --policy-document "$POLICY_JSON" \
+    --query 'Policy.Arn' \
+    --output text
+fi
 echo "    Policy ARN : $POLICY_ARN"
 
 # ─── 5. IAM Role (IRSA) ──────────────────────────────────────────────────────

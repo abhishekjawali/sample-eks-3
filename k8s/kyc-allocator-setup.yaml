@@ -1,0 +1,111 @@
+# k8s/kyc-allocator-setup.yaml
+#
+# DaemonSet that installs and configures the Nitro Enclaves memory allocator
+# on every node labeled aws-nitro-enclaves-k8s-dp=enabled.
+#
+# Required before deploying the enclave DaemonSet. nitro-cli run-enclave will
+# fail (exit 39) unless nitro-enclaves-allocator.service is running on the host
+# with at least memory_mib >= ENCLAVE_MEMORY_MB set in the sidecar DaemonSet.
+#
+# Hugepage note: the nitro-enclaves-allocator binary on AL2023 / newer kernels
+# always allocates 1 GB hugepages (ignoring pre-allocated 2 MB pages). The pod
+# spec must therefore declare hugepages-1Gi (not hugepages-2Mi) so that
+# Kubernetes sets the correct cgroup hugetlb limit for the container.
+#
+# After this DaemonSet runs, the kubelet on each Nitro node must be restarted
+# so it discovers the 1 GB hugepage capacity and advertises hugepages-1Gi:
+#   sudo systemctl restart kubelet
+# eks.sh handles this automatically via SSM.
+#
+# Usage:
+#   kubectl apply -f k8s/kyc-allocator-setup.yaml
+#   kubectl -n kube-system rollout status daemonset/kyc-nitro-enclaves-allocator
+#
+# Verify:
+#   kubectl -n kube-system logs -l app=kyc-nitro-enclaves-allocator -c setup-allocator
+#
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kyc-nitro-enclaves-allocator
+  namespace: kube-system
+  labels:
+    app: kyc-nitro-enclaves-allocator
+spec:
+  selector:
+    matchLabels:
+      app: kyc-nitro-enclaves-allocator
+  template:
+    metadata:
+      labels:
+        app: kyc-nitro-enclaves-allocator
+    spec:
+      # Required to access /proc/1/ns/* for nsenter into the host namespaces
+      hostPID: true
+
+      nodeSelector:
+        aws-nitro-enclaves-k8s-dp: enabled
+
+      initContainers:
+        - name: setup-allocator
+          image: amazonlinux:2023
+          securityContext:
+            privileged: true
+
+          # Mount /etc from the host so we can write allocator.yaml directly
+          # without going through nsenter for the file write step.
+          volumeMounts:
+            - name: host-etc
+              mountPath: /host/etc
+
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # ── 1. Write allocator config to the HOST filesystem ──────────────
+              # memory_mib must match or exceed ENCLAVE_MEMORY_MB in enclave-daemonset.yaml
+              mkdir -p /host/etc/nitro_enclaves
+              { echo '---'; echo 'cpu_count: 2'; echo 'memory_mib: 2048'; } \
+                > /host/etc/nitro_enclaves/allocator.yaml
+              echo "Allocator config written to /etc/nitro_enclaves/allocator.yaml"
+
+              # ── 2. Install + start allocator on the HOST via nsenter ──────────
+              # nsenter --mount=/proc/1/ns/mnt enters the host's mount namespace
+              # so dnf / systemctl operate against the host OS, not this container.
+              # nsenter is in util-linux, not present in the base amazonlinux:2023 image.
+              dnf install -y util-linux --quiet
+              nsenter --mount=/proc/1/ns/mnt -- bash -c '
+                set -euo pipefail
+
+                # Install aws-nitro-enclaves-cli if missing (idempotent)
+                if ! command -v nitro-cli &>/dev/null; then
+                  echo "Installing aws-nitro-enclaves-cli on host..."
+                  dnf install -y aws-nitro-enclaves-cli aws-nitro-enclaves-cli-devel
+                else
+                  echo "aws-nitro-enclaves-cli already installed."
+                fi
+
+                # Enable and (re)start the allocator to pick up the config.
+                # On AL2023 / newer kernels the allocator always uses 1 GB hugepages.
+                systemctl daemon-reload
+                systemctl enable nitro-enclaves-allocator.service
+                systemctl restart nitro-enclaves-allocator.service
+                systemctl status nitro-enclaves-allocator.service --no-pager
+                echo "Nitro Enclaves allocator is running."
+              '
+
+      # Pause container — keeps the pod alive so the DaemonSet is visible
+      # and will re-run initContainers after a node restart.
+      containers:
+        - name: pause
+          image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
+          resources:
+            requests:
+              cpu: "1m"
+              memory: "1Mi"
+
+      volumes:
+        - name: host-etc
+          hostPath:
+            path: /etc
